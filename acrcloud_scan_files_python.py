@@ -105,7 +105,6 @@ class ACRCloud_Scan_Files:
         try:
             results = []
             json_results = []
-            new_results = {}
             export_filepath = os.path.join(export_dir, export_filename)
 
             head_row = ['filename', 'timestamp', 'title', 'artists', 'album', 'acrid', 'played_duration', 'label',
@@ -121,10 +120,7 @@ class ACRCloud_Scan_Files:
                     results.append(row)
 
             for i in results:
-                for k in range(len(head_row)):
-                    new_results[head_row[k]] = i[k]
-
-                json_results.append(new_results)
+                json_results.append(dict(zip(head_row, i)))
 
             with codecs.open(export_filepath, 'w', 'utf-8-sig') as f:
                 f.write(json.dumps(json_results))

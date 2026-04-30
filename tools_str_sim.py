@@ -11,8 +11,9 @@ import sys
 import string
 from fuzzywuzzy import fuzz
 
-reload(sys)
-sys.setdefaultencoding("utf8")
+if sys.version_info.major == 2:
+    reload(sys)
+    sys.setdefaultencoding("utf8")
 
 RE_SPECIAL_STRING = """[ \[\]［］\(\)（）\n\t\r,\.\:"'‘“<>《》!！?？&]"""
 RE_SUB_STRING = "(\(.*\))|(\[.*\])|(（.*）)"
@@ -892,7 +893,7 @@ def str_sim(str1_old, str2_old):
     format_str1 = str_filter(str1.lower().strip())
     format_str2 = str_filter(str2.lower().strip())
     if format_str1 == format_str2 or format_str1.find(format_str2) != -1 or format_str2.find(format_str1) != -1:
-	return True, ""
+        return True, ""
 
     format_str1 = str_filter_sub(str1.lower().strip())
     format_str2 = str_filter_sub(str2.lower().strip())
