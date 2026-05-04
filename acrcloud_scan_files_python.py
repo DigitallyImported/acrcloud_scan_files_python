@@ -14,6 +14,7 @@ from openpyxl import Workbook
 from acrcloud_logger import AcrcloudLogger
 from acrcloud_filter_libary import FilterWorker
 from acrcloud.recognizer import ACRCloudRecognizer
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 if sys.version_info.major == 2:
     reload(sys)
@@ -222,8 +223,11 @@ class ACRCloud_Scan_Files:
                                    exc_info=True)
         return filepath, current_time, None
 
-    def recognize_file(self, filepath, start_time, stop_time, step, rec_length, with_duration=0):
+    def recognize_file(self, filepath, start_time, stop_time, step, rec_length, with_duration=0, workers=20):
         self.dlog.logger.warning("scan_file.start_to_run: {0}".format(filepath))
+
+        if workers > 1:
+            return self._recognize_file_parallel(filepath, start_time, stop_time, step, rec_length, workers)
 
         result = []
         for i in range(start_time, stop_time, step):
@@ -264,6 +268,54 @@ class ACRCloud_Scan_Files:
                 self.write_error(filepath, i, 'JSON ERROR')
         return result
 
+    def _recognize_file_parallel(self, filepath, start_time, stop_time, step, rec_length, workers):
+        offsets = list(range(start_time, stop_time, step))
+        ordered_results = {}
+        fatal_error = False
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_offset = {
+                executor.submit(self.do_recognize, filepath, i, rec_length): i
+                for i in offsets
+            }
+            for future in as_completed(future_to_offset):
+                offset = future_to_offset[future]
+                if fatal_error:
+                    future.cancel()
+                    continue
+                filep, current_time, res_data = future.result()
+                try:
+                    jsoninfo = json.loads(res_data)
+                    code = jsoninfo['status']['code']
+                    msg = jsoninfo['status']['msg']
+                    if "status" in jsoninfo and jsoninfo["status"]["code"] == 0:
+                        ordered_results[offset] = {"timestamp": current_time, "rec_length": rec_length,
+                                                   "result": jsoninfo, "file": filep}
+                        res = self.parse_data(jsoninfo)
+                        self.dlog.logger.info(
+                            'recognize_file.(time:{0}, title: {1})'.format(current_time, res[0]))
+                    if code == 1001:
+                        ordered_results[offset] = {"timestamp": current_time, "rec_length": rec_length,
+                                                   "result": jsoninfo, "file": filep}
+                        self.dlog.logger.info(
+                            "recognize_file.(time:{0}, code:{1}, No_Result)".format(current_time, code))
+                    elif code == 3001:
+                        self.dlog.logger.error(
+                            'recognize_file.(time:{0}, code:{1}, Missing/Invalid Access Key)'.format(current_time, code))
+                        fatal_error = True
+                    elif code == 3003:
+                        self.dlog.logger.error(
+                            'recognize_file.(time:{0}, code:{1}, Limit exceeded)'.format(current_time, code))
+                    elif code == 3000:
+                        self.dlog.logger.error(
+                            'recognize_file.(time:{0}, {1}, {2})'.format(current_time, code, msg))
+                        self.write_error(filepath, offset, 'NETWORK ERROR')
+                except Exception as e:
+                    self.dlog.logger.error('recognize_file.error', exc_info=True)
+                    self.write_error(filepath, offset, 'JSON ERROR')
+
+        return [ordered_results[k] for k in sorted(ordered_results)]
+
     def scan_file_main(self, option, start_time, stop_time):
         try:
             filepath = option.file_path
@@ -271,6 +323,7 @@ class ACRCloud_Scan_Files:
             rec_length = option.rec_length
             with_duration = option.with_duration
             out_dir = option.out_dir
+            workers = option.workers
             if out_dir and not os.path.exists(out_dir):
                 try:
                     os.makedirs(out_dir)
@@ -282,9 +335,9 @@ class ACRCloud_Scan_Files:
             file_type = option.file_type
             if start_time == 0 and stop_time == 0:
                 file_total_seconds = int(ACRCloudRecognizer.get_duration_ms_by_file(filepath) / 1000)
-                results = self.recognize_file(filepath, start_time, file_total_seconds, step, rec_length, with_duration)
+                results = self.recognize_file(filepath, start_time, file_total_seconds, step, rec_length, with_duration, workers)
             else:
-                results = self.recognize_file(filepath, start_time, stop_time, step, rec_length, with_duration)
+                results = self.recognize_file(filepath, start_time, stop_time, step, rec_length, with_duration, workers)
 
             filename_csv = 'result-' + os.path.basename(filepath.strip()) + '.csv'
             filename_xlsx = 'result-' + os.path.basename(filepath.strip()) + '.xlsx'
@@ -360,6 +413,8 @@ if __name__ == '__main__':
     parser.add_option('-w', '--with_duration', dest="with_duration", type='int', default=0, help='with_duration')
     parser.add_option('-o', '--out_dir', dest="out_dir", type='string', default="./", help='out_dir')
     parser.add_option('-t', '--file_type', dest="file_type", type='string', default="csv", help='file_type')
+    parser.add_option('--workers', dest='workers', type='int', default=20,
+                      help='number of concurrent HTTP requests (default: 20)')
 
     (options, args) = parser.parse_args()
     start = int(options.range.split('-')[0])
