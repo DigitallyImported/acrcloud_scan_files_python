@@ -223,6 +223,43 @@ class ACRCloud_Scan_Files:
                                    exc_info=True)
         return filepath, current_time, None
 
+    def _process_recognition_result(self, filep, current_time, res_data, filepath, offset, rec_length):
+        """Parse one recognition response. Returns (entry_or_None, fatal, done)."""
+        try:
+            jsoninfo = json.loads(res_data)
+            code = jsoninfo['status']['code']
+            msg = jsoninfo['status']['msg']
+
+            entry = None
+            if code == 0:
+                entry = {"timestamp": current_time, "rec_length": rec_length, "result": jsoninfo, "file": filep}
+                res = self.parse_data(jsoninfo)
+                self.dlog.logger.info(
+                    'recognize_file.(time:{0}, title: {1}, custom title: {2})'.format(current_time, res[0], res[-2]))
+
+            if code == 2005:
+                self.dlog.logger.warning('recognize_file.(time:{0}, code:{1}, Done!)'.format(current_time, code))
+                return entry, False, True
+            elif code == 1001:
+                entry = {"timestamp": current_time, "rec_length": rec_length, "result": jsoninfo, "file": filep}
+                self.dlog.logger.info("recognize_file.(time:{0}, code:{1}, No_Result)".format(current_time, code))
+            elif code == 3001:
+                self.dlog.logger.error(
+                    'recognize_file.(time:{0}, code:{1}, Missing/Invalid Access Key)'.format(current_time, code))
+                return entry, True, False
+            elif code == 3003:
+                self.dlog.logger.error(
+                    'recognize_file.(time:{0}, code:{1}, Limit exceeded)'.format(current_time, code))
+            elif code == 3000:
+                self.dlog.logger.error('recognize_file.(time:{0}, {1}, {2})'.format(current_time, code, msg))
+                self.write_error(filepath, offset, 'NETWORK ERROR')
+
+            return entry, False, False
+        except Exception as e:
+            self.dlog.logger.error('recognize_file.error', exc_info=True)
+            self.write_error(filepath, offset, 'JSON ERROR')
+            return None, False, False
+
     def recognize_file(self, filepath, start_time, stop_time, step, rec_length, with_duration=0, workers=20):
         self.dlog.logger.warning("scan_file.start_to_run: {0}".format(filepath))
 
@@ -232,40 +269,12 @@ class ACRCloud_Scan_Files:
         result = []
         for i in range(start_time, stop_time, step):
             filep, current_time, res_data = self.do_recognize(filepath, i, rec_length)
-            try:
-                print(res_data)
-                jsoninfo = json.loads(res_data)
-                code = jsoninfo['status']['code']
-                msg = jsoninfo['status']['msg']
-                if "status" in jsoninfo and jsoninfo["status"]["code"] == 0:
-                    result.append(
-                        {"timestamp": current_time, "rec_length": rec_length, "result": jsoninfo, "file": filep})
-                    res = self.parse_data(jsoninfo)
-                    # self.dlog.logger.info('recognize_file.(time:{0}, title: {1})'.format(current_time, res[0]))
-                    self.dlog.logger.info(
-                        'recognize_file.(time:{0}, title: {1}, custom title: {2})'.format(current_time, res[0],
-                                                                                          res[-2]))
-                if code == 2005:
-                    self.dlog.logger.warning('recognize_file.(time:{0}, code:{1}, Done!)'.format(current_time, code))
-                    break
-                elif code == 1001:
-                    result.append(
-                        {"timestamp": current_time, "rec_length": rec_length, "result": jsoninfo, "file": filep})
-                    self.dlog.logger.info("recognize_file.(time:{0}, code:{1}, No_Result)".format(current_time, code))
-                elif code == 3001:
-                    self.dlog.logger.error(
-                        'recognize_file.(time:{0}, code:{1}, Missing/Invalid Access Key)'.format(current_time, code))
-                    break
-                elif code == 3003:
-                    self.dlog.logger.error(
-                        'recognize_file.(time:{0}, code:{1}, Limit exceeded)'.format(current_time, code))
-                elif code == 3000:
-                    self.dlog.logger.error('recognize_file.(time:{0}, {1}, {2})'.format(current_time, code, msg))
-                    self.write_error(filepath, i, 'NETWORK ERROR')
-                i += step
-            except Exception as e:
-                self.dlog.logger.error('recognize_file.error', exc_info=True)
-                self.write_error(filepath, i, 'JSON ERROR')
+            print(res_data)
+            entry, fatal, done = self._process_recognition_result(filep, current_time, res_data, filepath, i, rec_length)
+            if entry is not None:
+                result.append(entry)
+            if fatal or done:
+                break
         return result
 
     def _recognize_file_parallel(self, filepath, start_time, stop_time, step, rec_length, workers):
@@ -284,35 +293,11 @@ class ACRCloud_Scan_Files:
                     future.cancel()
                     continue
                 filep, current_time, res_data = future.result()
-                try:
-                    jsoninfo = json.loads(res_data)
-                    code = jsoninfo['status']['code']
-                    msg = jsoninfo['status']['msg']
-                    if "status" in jsoninfo and jsoninfo["status"]["code"] == 0:
-                        ordered_results[offset] = {"timestamp": current_time, "rec_length": rec_length,
-                                                   "result": jsoninfo, "file": filep}
-                        res = self.parse_data(jsoninfo)
-                        self.dlog.logger.info(
-                            'recognize_file.(time:{0}, title: {1})'.format(current_time, res[0]))
-                    if code == 1001:
-                        ordered_results[offset] = {"timestamp": current_time, "rec_length": rec_length,
-                                                   "result": jsoninfo, "file": filep}
-                        self.dlog.logger.info(
-                            "recognize_file.(time:{0}, code:{1}, No_Result)".format(current_time, code))
-                    elif code == 3001:
-                        self.dlog.logger.error(
-                            'recognize_file.(time:{0}, code:{1}, Missing/Invalid Access Key)'.format(current_time, code))
-                        fatal_error = True
-                    elif code == 3003:
-                        self.dlog.logger.error(
-                            'recognize_file.(time:{0}, code:{1}, Limit exceeded)'.format(current_time, code))
-                    elif code == 3000:
-                        self.dlog.logger.error(
-                            'recognize_file.(time:{0}, {1}, {2})'.format(current_time, code, msg))
-                        self.write_error(filepath, offset, 'NETWORK ERROR')
-                except Exception as e:
-                    self.dlog.logger.error('recognize_file.error', exc_info=True)
-                    self.write_error(filepath, offset, 'JSON ERROR')
+                entry, fatal, _ = self._process_recognition_result(filep, current_time, res_data, filepath, offset, rec_length)
+                if entry is not None:
+                    ordered_results[offset] = entry
+                if fatal:
+                    fatal_error = True
 
         return [ordered_results[k] for k in sorted(ordered_results)]
 
